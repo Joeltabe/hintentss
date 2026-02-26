@@ -159,15 +159,16 @@ Docker images are available for both `amd64` and `arm64` architectures. See [doc
     git clone https://github.com/dotandev/hintents.git
     cd hintents
     ```
-2.  Build the Rust simulator:
+2.  Install dependencies:
+    ```bash
+    go mod download
+    cd simulator && cargo fetch && cd ..
+    ```
+3.  Build the Rust simulator:
     ```bash
     cd simulator
     cargo build --release
     cd ..
-    ```
-3.  Build the Go CLI:
-    ```bash
-    go build -o erst cmd/erst/main.go
     ```
 4.  Run tests:
     ```bash
