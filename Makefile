@@ -88,3 +88,16 @@ docker-push:
 	@echo "Use GitHub Actions workflow for pushing to registry"
 	@echo "Or manually: docker push <registry>/erst:<tag>"
 
+
+# Formatting targets
+fmt: fmt-go fmt-rust
+
+fmt-go:
+	go fmt ./...
+	gofmt -w .
+
+fmt-rust:
+	cd simulator && cargo fmt
+
+pre-commit: fmt lint
+	@echo "Pre-commit checks passed"
