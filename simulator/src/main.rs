@@ -5,6 +5,7 @@
 
 mod config;
 mod gas_optimizer;
+mod git_detector;
 mod runner;
 mod source_map_cache;
 mod source_mapper;
@@ -12,6 +13,8 @@ mod stack_trace;
 mod types;
 mod vm;
 mod wasm;
+mod wasm_types;
+mod snapshot;
 
 use crate::gas_optimizer::{BudgetMetrics, GasOptimizationAdvisor, CPU_LIMIT, MEMORY_LIMIT};
 use crate::source_mapper::SourceMapper;
@@ -154,6 +157,7 @@ fn check_memory_limit_or_panic(host: &Host, memory_limit: Option<u64>) {
 fn execute_operations(
     host: &Host,
     operations: &[Operation],
+    request: &SimulationRequest,
     memory_limit: Option<u64>,
     coverage: &mut CoverageTracker,
 ) -> Result<Vec<String>, HostError> {
@@ -164,6 +168,17 @@ fn execute_operations(
         match &op.body {
             OperationBody::InvokeHostFunction(invoke_op) => {
                 logs.push("Executing InvokeHostFunction...".to_string());
+                
+                // Check for signature verification mock
+                if let Some(mock_result) = check_signature_verification_mocks(&request, &invoke_op.host_function) {
+                    logs.push(format!("Mock signature verification: {:?}", mock_result));
+                    if !mock_result {
+                        return Err(soroban_env_host::HostError::from(
+                            (soroban_env_host::xdr::ScErrorType::Context, soroban_env_host::xdr::ScErrorCode::InvalidInput)
+                        ));
+                    }
+                }
+                
                 let val = host.invoke_function(invoke_op.host_function.clone())?;
                 logs.push(format!("Result: {val:?}"));
                 check_memory_limit_or_panic(host, memory_limit);
@@ -219,6 +234,30 @@ fn mocked_required_fee_stroops(
     }
 }
 
+fn check_signature_verification_mocks(
+    request: &SimulationRequest,
+    host_function: &soroban_env_host::xdr::HostFunction,
+) -> Option<bool> {
+    // Check if signature verification mocking is enabled
+    let mock_result = request.mock_signature_verification?;
+    
+    // Check if this is a signature verification host function
+    // Note: Current soroban-env-host version only has InvokeContract, CreateContract, and UploadContractWasm
+    // Signature verification functions may be handled at a different level or in newer versions
+    match host_function {
+        // For now, we'll mock signature verification based on function name patterns
+        _ => {
+            // Check if the function name contains signature verification related terms
+            let function_name = host_function.name();
+            if function_name.contains("Verify") || function_name.contains("Signature") || function_name.contains("Ed25519") {
+                Some(mock_result)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 fn categorize_events(events: &soroban_env_host::events::Events) -> Vec<CategorizedEvent> {
     events
         .0
@@ -263,6 +302,7 @@ fn categorize_events(events: &soroban_env_host::events::Events) -> Vec<Categoriz
                     // failed_call=true means the call that emitted this event
                     // actually failed; so a successful call is the inverse.
                     in_successful_contract_call: !e.failed_call,
+                    wasm_instruction,
                 },
             }
         })
@@ -407,7 +447,7 @@ fn main() {
                 if let Err(e) = vm::enforce_soroban_compatibility(&wasm_bytes) {
                     return send_error(format!("Strict VM enforcement failed: {}", e));
                 }
-                let mapper = SourceMapper::new(wasm_bytes);
+                let mapper = SourceMapper::new_with_options(wasm_bytes, request.no_cache.unwrap_or(false));
                 if mapper.has_debug_symbols() {
                     eprintln!("Debug symbols found in WASM");
                     Some(mapper)
@@ -506,7 +546,7 @@ fn main() {
     // Wrap the operation execution in panic protection
     let mut coverage = CoverageTracker::default();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        execute_operations(&host, operations, request.memory_limit, &mut coverage)
+        execute_operations(&host, operations, &request, request.memory_limit, &mut coverage)
     }));
 
     // Budget and Reporting
@@ -708,11 +748,12 @@ fn main() {
                 optimization_report,
                 budget_usage: Some(budget_usage),
                 stack_trace: None,
+                wasm_offset: None,
                 // If a WASM with debug symbols was provided, expose the first
                 // mappable source location so callers can correlate failures.
                 source_location: source_mapper
                     .as_ref()
-                    .and_then(|m| m.map_wasm_offset_to_source(0))
+                    .and_then(|m: &SourceMapper| m.map_wasm_offset_to_source(0))
                     .and_then(|loc| serde_json::to_string(&loc).ok()),
                 wasm_offset: None,
                 linear_memory_dump: None,
@@ -985,8 +1026,13 @@ pub fn decode_error(raw: &str) -> String {
             .to_string();
     }
 
-    if lower.contains("budget") || lower.contains("cpu limit") || lower.contains("mem limit") {
-        return "Resource limit exceeded — the transaction consumed more CPU instructions or memory than the protocol-21 budget allows.".to_string();
+    // Look for "Instruction: <opcode>" pattern in the data
+    if let Some(start) = data.find("Instruction: ") {
+        let instr_start = start + "Instruction: ".len();
+        let rest = &data[instr_start..];
+        // Find the end of the instruction (quote or end of string)
+        let end = rest.find('"').unwrap_or(rest.len());
+        return Some(rest[..end].to_string());
     }
 
     if lower.contains("missing") || lower.contains("not found") {
