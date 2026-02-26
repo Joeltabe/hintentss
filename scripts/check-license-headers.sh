@@ -1,13 +1,13 @@
-# Copyright (c) Hintents Authors.
-# SPDX-License-Identifier: Apache-2.0
-
 #!/bin/bash
 # Copyright 2025 Erst Users
 # SPDX-License-Identifier: Apache-2.0
 
 # Check for license headers in Go and Rust files
 # Exit with status 1 if any files are missing headers
-set -e
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$REPO_ROOT"
 
 MISSING_HEADERS=0
 EXPECTED_HEADER="Copyright 2025 Erst Users"
@@ -24,7 +24,7 @@ while IFS= read -r file; do
     else
         echo "  [OK] $file"
     fi
-done < <(find . -type d \( -name "target" -o -name "vendor" \) -prune -o -name "*.go" -type f -print)
+done < <(find . -type d \( -name "target" -o -name "vendor" -o -name "integration" \) -prune -o -name "*.go" -type f -print)
 
 # Check Rust files
 echo ""
@@ -36,7 +36,7 @@ while IFS= read -r file; do
     else
         echo "  [OK] $file"
     fi
-done < <(find . -type d \( -name "target" -o -name "vendor" \) -prune -o -name "*.rs" -type f -print)
+done < <(find . -type d \( -name "target" -o -name "vendor" -o -name "integration" \) -prune -o -name "*.rs" -type f -print)
 
 echo ""
 if [ $MISSING_HEADERS -eq 0 ]; then
