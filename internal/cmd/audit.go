@@ -32,6 +32,7 @@ type HardwareAttestation struct {
 	RetrievedAt     string                  `json:"retrieved_at"`
 }
 
+// AuditLog represents the signed audit trail of a transaction simulation
 type AuditLog struct {
 	Version         string    `json:"version"`
 	Timestamp       time.Time `json:"timestamp"`
@@ -62,9 +63,20 @@ func Generate(txHash string, envelopeXdr, resultMetaXdr string, events, logs []s
 		Logs:          logs,
 	}
 
-	// 2. Serialize Payload to calculate hash using canonical JSON
-	// This ensures deterministic hashing across different OS targets
-	payloadBytes, err := marshalCanonical(payload)
+	// 2. Construct the hash input.
+	// When hardware attestation is present, it is included in the hash
+	// so that stripping it would invalidate the signature.
+	type hashInput struct {
+		Payload             Payload              `json:"payload"`
+		HardwareAttestation *HardwareAttestation `json:"hardware_attestation,omitempty"`
+	}
+
+	hi := hashInput{Payload: payload}
+	if opts != nil && opts.HardwareAttestation != nil {
+		hi.HardwareAttestation = opts.HardwareAttestation
+	}
+
+	payloadBytes, err := json.Marshal(hi)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
