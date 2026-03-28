@@ -5,6 +5,9 @@ import * as vscode from 'vscode';
 import { Trace, TraceStep } from './erstClient';
 
 export class TraceTreeDataProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+    private currentStepIndex: number = 0;
+    private treeView?: vscode.TreeView<vscode.TreeItem>;
+
     private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | null> = new vscode.EventEmitter<vscode.TreeItem | undefined | null>();
     readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null> = this._onDidChangeTreeData.event;
 
@@ -12,6 +15,9 @@ export class TraceTreeDataProvider implements vscode.TreeDataProvider<vscode.Tre
     private searchQuery = '';
 
     constructor() { }
+    constructor(treeView?: vscode.TreeView<vscode.TreeItem>) {
+        this.treeView = treeView;
+    }
 
     refresh(trace: Trace): void {
         this.currentTrace = trace;
@@ -60,6 +66,24 @@ export class TraceTreeDataProvider implements vscode.TreeDataProvider<vscode.Tre
                 }
 
                 return Promise.resolve(children);
+            }
+            setCurrentStepIndex(idx: number): void {
+                if (!this.currentTrace) return;
+                if (idx < 0 || idx >= this.currentTrace.states.length) return;
+                this.currentStepIndex = idx;
+                this._onDidChangeTreeData.fire(undefined);
+                // Auto-reveal the current item if treeView is set
+                if (this.treeView) {
+                    const item = new TraceItem(
+                        this.currentTrace.states[idx],
+                        this.searchQuery,
+                        idx > 0 ? this.currentTrace.states[idx - 1] : undefined,
+                        true // isCurrent
+                    );
+                    setTimeout(() => {
+                        this.treeView!.reveal(item, { select: true, focus: true, expand: false });
+                    }, 100);
+                }
             }
             return Promise.resolve([]);
         }
