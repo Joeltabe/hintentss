@@ -5,7 +5,9 @@ package snapshot
 
 import (
 	"bytes"
+	"compress/zlib"
 	"encoding/base64"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,4 +133,61 @@ func TestLoadSavePreservesLinearMemory(t *testing.T) {
 	if !bytes.Equal(decoded, memory) {
 		t.Fatalf("expected %q, got %q", memory, decoded)
 	}
+}
+
+func TestDecodeLinearMemoryCompressedPayload(t *testing.T) {
+	original := bytes.Repeat([]byte("AAAAAAAAAABBBBBBBBBBCCCCCCCCCC"), 64)
+
+	var compressed bytes.Buffer
+	writer := zlib.NewWriter(&compressed)
+	if _, err := writer.Write(original); err != nil {
+		t.Fatalf("compress write failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("compress close failed: %v", err)
+	}
+
+	snap := &Snapshot{
+		LinearMemory: compressedMemoryPrefix + base64.StdEncoding.EncodeToString(compressed.Bytes()),
+	}
+	decoded, err := snap.DecodeLinearMemory()
+	if err != nil {
+		t.Fatalf("DecodeLinearMemory failed for compressed payload: %v", err)
+	}
+	if !bytes.Equal(decoded, original) {
+		t.Fatalf("decoded compressed payload mismatch")
+	}
+}
+
+func TestEncodeMemoryUsesCompressionWhenSmaller(t *testing.T) {
+	original := bytes.Repeat([]byte("AAAAAAAAAABBBBBBBBBBCCCCCCCCCC"), 64)
+	encoded := encodeMemory(original)
+	if !strings.HasPrefix(encoded, compressedMemoryPrefix) {
+		t.Fatalf("expected compressed encoding prefix, got %q", encoded[:min(16, len(encoded))])
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(encoded, compressedMemoryPrefix))
+	if err != nil {
+		t.Fatalf("base64 decode failed: %v", err)
+	}
+
+	r, err := zlib.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("zlib reader failed: %v", err)
+	}
+	defer r.Close()
+	decoded, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("zlib read failed: %v", err)
+	}
+	if !bytes.Equal(decoded, original) {
+		t.Fatalf("decoded payload mismatch")
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

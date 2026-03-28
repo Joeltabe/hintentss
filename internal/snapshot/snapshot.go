@@ -4,9 +4,12 @@
 package snapshot
 
 import (
+	"bytes"
+	"compress/zlib"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 )
@@ -25,6 +28,8 @@ type Snapshot struct {
 type BuildOptions struct {
 	LinearMemory []byte
 }
+
+const compressedMemoryPrefix = "zlib:"
 
 // FromMap converts the internal map representation to a Snapshot.
 // Enforces deterministic ordering by sorting keys.
@@ -69,11 +74,32 @@ func (s *Snapshot) DecodeLinearMemory() ([]byte, error) {
 		return nil, nil
 	}
 
-	decoded, err := base64.StdEncoding.DecodeString(s.LinearMemory)
+	encoded := s.LinearMemory
+	compressed := false
+	if len(encoded) > len(compressedMemoryPrefix) && encoded[:len(compressedMemoryPrefix)] == compressedMemoryPrefix {
+		compressed = true
+		encoded = encoded[len(compressedMemoryPrefix):]
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode linear memory: %w", err)
 	}
-	return decoded, nil
+	if !compressed {
+		return decoded, nil
+	}
+
+	reader, err := zlib.NewReader(bytes.NewReader(decoded))
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize compressed linear memory reader: %w", err)
+	}
+	defer reader.Close()
+
+	inflated, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inflate compressed linear memory: %w", err)
+	}
+	return inflated, nil
 }
 
 // Load reads a snapshot from a JSON file.
@@ -137,5 +163,25 @@ func encodeMemory(memory []byte) string {
 	if len(memory) == 0 {
 		return ""
 	}
-	return base64.StdEncoding.EncodeToString(memory)
+
+	rawEncoded := base64.StdEncoding.EncodeToString(memory)
+
+	var compressed bytes.Buffer
+	writer, err := zlib.NewWriterLevel(&compressed, zlib.BestCompression)
+	if err != nil {
+		return rawEncoded
+	}
+	if _, err := writer.Write(memory); err != nil {
+		writer.Close()
+		return rawEncoded
+	}
+	if err := writer.Close(); err != nil {
+		return rawEncoded
+	}
+
+	compressedEncoded := base64.StdEncoding.EncodeToString(compressed.Bytes())
+	if len(compressedEncoded)+len(compressedMemoryPrefix) >= len(rawEncoded) {
+		return rawEncoded
+	}
+	return compressedMemoryPrefix + compressedEncoded
 }

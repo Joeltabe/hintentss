@@ -4,6 +4,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -49,18 +50,10 @@ var exportCmd = &cobra.Command{
 
 		var memoryDump []byte
 		if exportIncludeMemoryFlag {
-			var simResp simulator.SimulationResponse
-			if err := json.Unmarshal([]byte(data.SimResponseJSON), &simResp); err != nil {
-				return errors.WrapUnmarshalFailed(err, "simulation response")
-			}
-			if simResp.LinearMemoryDump == "" {
-				fmt.Println("Warning: Simulator response does not include a linear memory dump.")
-			} else {
-				decoded, err := base64.StdEncoding.DecodeString(simResp.LinearMemoryDump)
-				if err != nil {
-					return errors.WrapValidationError(fmt.Sprintf("failed to decode simulator linear memory dump: %v", err))
-				}
-				memoryDump = decoded
+			var err error
+			memoryDump, err = loadLinearMemoryDump(cmd.Context(), data, &simReq)
+			if err != nil {
+				return err
 			}
 		}
 
@@ -177,4 +170,39 @@ func extractLinearMemoryBase64(simResponseJSON string) (string, error) {
 	}
 
 	return payload.LinearMemory, nil
+}
+
+func loadLinearMemoryDump(ctx context.Context, data *SessionData, simReq *simulator.SimulationRequest) ([]byte, error) {
+	encodedMemory, err := extractLinearMemoryBase64(data.SimResponseJSON)
+	if err != nil {
+		return nil, errors.WrapUnmarshalFailed(err, "simulation response")
+	}
+
+	if encodedMemory == "" {
+		runner, runnerErr := simulator.NewRunner("", false)
+		if runnerErr != nil {
+			fmt.Println("Warning: simulator response does not include a linear memory dump and rerun is unavailable.")
+			return nil, nil
+		}
+
+		replayReq := *simReq
+		replayReq.IncludeLinearMemory = true
+		replayResp, runErr := runner.Run(ctx, &replayReq)
+		if runErr != nil {
+			fmt.Printf("Warning: failed to replay simulation for linear memory dump: %v\n", runErr)
+			return nil, nil
+		}
+		encodedMemory = replayResp.LinearMemoryDump
+	}
+
+	if encodedMemory == "" {
+		fmt.Println("Warning: Simulator response does not include a linear memory dump.")
+		return nil, nil
+	}
+
+	decoded, decodeErr := base64.StdEncoding.DecodeString(encodedMemory)
+	if decodeErr != nil {
+		return nil, errors.WrapValidationError(fmt.Sprintf("failed to decode simulator linear memory dump: %v", decodeErr))
+	}
+	return decoded, nil
 }
